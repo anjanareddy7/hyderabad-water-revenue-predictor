@@ -136,6 +136,8 @@ class PredictRequest(BaseModel):
 
 
 class PredictResponse(BaseModel):
+    model_config = {"protected_namespaces": ()}
+
     predicted_efficiency:       float
     predicted_shortfall_rupees: float
     predicted_shortfall_crore:  float
