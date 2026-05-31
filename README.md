@@ -1,33 +1,32 @@
 [![CI](https://github.com/anjanareddy7/hyderabad-water-revenue-predictor/actions/workflows/ci.yml/badge.svg)](https://github.com/anjanareddy7/hyderabad-water-revenue-predictor/actions/workflows/ci.yml)
+
 # Hyderabad Water Revenue Predictor
 
 Predicts monthly water bill collection efficiency across 500+ sections of Hyderabad's HMWSSB utility using 4 years of real government billing data (2022–2026, Telangana Open Data Portal).
 
 ## The problem
 
-HMWSSB bills ₹531 crore in water charges every year that goes uncollected. Field collection teams have no way to know in advance which sections will underperform — they treat all defaulters the same. This project builds a prediction system that identifies high-risk sections a month in advance so intervention can be targeted where it recovers the most revenue.
+HMWSSB bills ₹531 crore in water charges every year that goes uncollected. Field collection teams have no way to know in advance which sections will underperform — they treat all defaulters the same. This project builds a four-model intelligence system that identifies high-risk sections a month in advance, flags billing anomalies, and forecasts total division revenue so intervention can be targeted where it recovers the most rupees.
 
 ## Key findings from EDA
 
 - **₹531 crore lost annually** (2023–2026 average, excluding 2022 data artifact)
-- **Domestic connections drive 65.8% of shortfall** despite only 44.8% of total demand
+- **Domestic connections drive 65.8% of shortfall** despite only 44.8% of total demand — not slums
 - **Slum connections have 1.4% median efficiency** but only 6.8% of total shortfall due to low volume
-- **Industrial connections pay reliably** at 100% median efficiency
+- **Industrial connections pay reliably** at 100% median efficiency — metering and enforcement work
 - **January anomaly**: ₹9.5 crore shortfall in January alone vs ₹1.6–2.8 crore other months
+- **344 chronic underperformer** section-category pairs identified across the city
 
-## Architecture
+## Four ML models
 
-```
-Raw CSVs (52 files, 2022-2026)
-    ↓ src/etl.py
-Cleaned Parquet (data/processed/)
-    ↓ src/features.py
-Feature matrix (93,973 rows x 31 features)
-    ↓ src/train.py
-XGBoost model + MLflow tracking
-    ↓ api/main.py
-FastAPI (Docker) → Streamlit dashboard
-```
+| Model | Type | Purpose |
+|-------|------|---------|
+| XGBoost | Supervised regression | Predict next month collection efficiency per section |
+| KMeans (k=4) | Unsupervised clustering | Profile sections into risk tiers |
+| Isolation Forest | Anomaly detection | Flag unusual billing patterns |
+| Prophet | Time series forecasting | Forecast next month demand per division |
+
+Combined revenue forecast: `expected collection = Prophet demand × XGBoost efficiency`
 
 ## Model performance
 
@@ -50,13 +49,46 @@ No overfitting: train RMSE 0.3463 vs test RMSE 0.3429 (-1% gap)
 | Moderate Risk | 148 | 61% | GovtInstitutional |
 | Low Risk | 254 | 98% | Industrial/Commercial |
 
+## Anomaly detection (Isolation Forest)
+
+- Trained on 59,407 rows from 2022–2024 with 5% contamination rate
+- Flags 6.3% of test period rows as anomalous
+- Catches: sudden demand spikes, mass connection changes, structural billing zeros
+- Anomaly score added to every `/predict` API response
+
+## Architecture
+
+```
+Raw CSVs (52 files, 2022-2026)
+    ↓ src/etl.py
+Cleaned Parquet (data/processed/)
+    ↓ src/features.py
+Feature matrix (93,973 rows x 31 features)
+    ↓ src/train.py          src/anomaly.py       src/demand_forecast.py
+XGBoost model           Isolation Forest        Prophet per division
+    ↓                        ↓                        ↓
+    └──────────── api/main.py (FastAPI) ──────────────┘
+                          ↓
+              dashboard/app.py (Streamlit)
+                  5 tabs, live predictions
+```
+
+## Dashboard tabs
+
+1. **Field Manager View** — section predictions sorted by risk, rupee shortfall per section
+2. **Data / Ops View** — actual vs predicted chart, model scorecard, SHAP-ready
+3. **Division Forecast** — stacked bar chart of expected collection vs shortfall by division
+4. **Anomaly Detection** — table of flagged billing anomalies with scores
+5. **Revenue Forecast** — Prophet demand chart with confidence interval + revenue forecast
+
 ## Tech stack
 
 - **Data**: Pandas, PyArrow, rapidfuzz
-- **ML**: XGBoost, LightGBM, Scikit-learn, MLflow
+- **ML**: XGBoost, LightGBM, Scikit-learn, Prophet, MLflow
 - **API**: FastAPI, Pydantic, Uvicorn
 - **Dashboard**: Streamlit, Plotly
 - **Infrastructure**: Docker, DockerHub
+- **CI/CD**: GitHub Actions (runs on every push)
 - **Testing**: pytest (37 tests across ETL, features, API)
 
 ## Running locally
@@ -69,6 +101,7 @@ pip install -r requirements.txt
 python src/etl.py
 python src/features.py
 python src/train.py
+python src/anomaly.py
 
 uvicorn api.main:app --port 8000
 
@@ -82,11 +115,22 @@ docker pull anjanareddy7/hmwssb-api:latest
 docker run -p 8000:8000 anjanareddy7/hmwssb-api:latest
 ```
 
-## API usage
+## API endpoints
+
+| Endpoint | Method | Description |
+|----------|--------|-------------|
+| `/predict` | POST | Predict efficiency + anomaly score for a section |
+| `/forecast/divisions` | GET | Collection forecast for all divisions |
+| `/forecast/division/{id}` | GET | Forecast for a single division |
+| `/forecast/revenue/{id}` | GET | Prophet + XGBoost combined revenue forecast |
+| `/anomaly/summary` | GET | Top anomalous sections in test period |
+| `/sections` | GET | List of all known sections |
+| `/health` | GET | API health check |
+
+## Sample prediction
 
 ```bash
 POST /predict
-
 {
   "section": "KPHB",
   "division": 7,
@@ -101,7 +145,6 @@ POST /predict
 }
 
 Response:
-
 {
   "predicted_efficiency": 0.5364,
   "predicted_shortfall_rupees": 403293.56,
@@ -109,6 +152,8 @@ Response:
   "risk_tier": "Medium Risk",
   "cold_start": false,
   "high_uncertainty": false,
+  "is_anomaly": false,
+  "anomaly_score": -0.3561,
   "model_version": "1.0.0"
 }
 ```
