@@ -2,6 +2,7 @@ from contextlib import asynccontextmanager
 from fastapi import FastAPI, HTTPException
 from pydantic import BaseModel, field_validator
 from pathlib import Path
+from src.division_forecast import get_division_summary, get_all_divisions_forecast
 import pandas as pd
 import numpy as np
 import joblib
@@ -262,3 +263,21 @@ def get_sections():
 @app.get("/categories")
 def get_categories():
     return {"categories": sorted(list(KNOWN_CATEGORIES))}
+
+@app.get("/forecast/divisions")
+def forecast_all_divisions():
+    """Get predicted collection forecast for all divisions."""
+    forecasts = get_all_divisions_forecast()
+    return {"divisions": forecasts}
+
+
+@app.get("/forecast/division/{division_id}")
+def forecast_division(division_id: int):
+    """Get predicted collection forecast for a single division."""
+    result = get_division_summary(division_id)
+    if result is None:
+        raise HTTPException(
+            status_code=404,
+            detail=f"Division {division_id} not found"
+        )
+    return result

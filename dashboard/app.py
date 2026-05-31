@@ -94,7 +94,7 @@ st.divider()
 
 # ── Tabs ──────────────────────────────────────────────────────────────────────
 
-tab1, tab2 = st.tabs(["🏢 Field Manager View", "📊 Data / Ops View"])
+tab1, tab2, tab3 = st.tabs(["🏢 Field Manager View", "📊 Data / Ops View", "🏙️ Division Forecast"])
 
 # ════════════════════════════════════════════════════════════════════════════════
 # TAB 1 — Field Manager View
@@ -280,3 +280,121 @@ with tab2:
         )
         fig2.update_layout(height=300, margin=dict(t=40))
         st.plotly_chart(fig2, use_container_width=True)
+
+# ════════════════════════════════════════════════════════════════════════════════
+# TAB 3 — Division Forecast
+# ════════════════════════════════════════════════════════════════════════════════
+
+with tab3:
+    st.subheader("Division-level revenue forecast")
+    st.caption("Expected collection vs demand for next month, rolled up from section-level predictions.")
+
+    try:
+        r = requests.get(f"{API_URL}/forecast/divisions", timeout=10)
+        divisions_data = r.json()["divisions"]
+        df_div = pd.DataFrame(divisions_data)
+
+        # ── Summary metrics ──
+        col1, col2, col3 = st.columns(3)
+        col1.metric(
+            "Total expected demand",
+            f"₹{df_div['total_demand_crore'].sum():.1f} crore"
+        )
+        col2.metric(
+            "Total expected collection",
+            f"₹{df_div['expected_collection_crore'].sum():.1f} crore"
+        )
+        col3.metric(
+            "Total expected shortfall",
+            f"₹{df_div['expected_shortfall_crore'].sum():.1f} crore"
+        )
+
+        st.divider()
+
+        # ── Bar chart — shortfall by division ──
+        st.markdown("#### Expected shortfall by division (top 15)")
+        top15 = df_div.head(15).copy()
+        top15['division'] = top15['division'].astype(str)
+
+        fig = go.Figure()
+        fig.add_trace(go.Bar(
+            x=top15['division'],
+            y=top15['expected_collection_crore'],
+            name="Expected collection",
+            marker_color="#22c55e"
+        ))
+        fig.add_trace(go.Bar(
+            x=top15['division'],
+            y=top15['expected_shortfall_crore'],
+            name="Expected shortfall",
+            marker_color="#ef4444"
+        ))
+        fig.update_layout(
+            barmode="stack",
+            xaxis_title="Division",
+            yaxis_title="Amount (₹ crore)",
+            height=380,
+            margin=dict(t=20),
+            legend=dict(orientation="h", y=1.1)
+        )
+        st.plotly_chart(fig, use_container_width=True)
+
+        # ── Division detail table ──
+        st.markdown("#### All divisions — ranked by shortfall")
+        # Compute efficiency % from weighted_efficiency if pct column missing
+        if 'weighted_efficiency_pct' not in df_div.columns and 'weighted_efficiency' in df_div.columns:
+            df_div['weighted_efficiency_pct'] = df_div['weighted_efficiency'] * 100
+
+        display_cols = {
+            'division':                  'Division',
+            'total_demand_crore':        'Demand (₹cr)',
+            'expected_collection_crore': 'Collection (₹cr)',
+            'expected_shortfall_crore':  'Shortfall (₹cr)',
+            'weighted_efficiency_pct':   'Efficiency %',
+            'sections_count':            'Sections',
+            'high_risk_count':           'High Risk',
+        }
+        df_display = df_div[list(display_cols.keys())].rename(columns=display_cols)
+        df_display = df_display.round(2)
+
+        st.dataframe(
+            df_display,
+            use_container_width=True,
+            hide_index=True,
+            column_config={
+                "Efficiency %": st.column_config.ProgressColumn(
+                    "Efficiency %",
+                    min_value=0,
+                    max_value=100,
+                    format="%.1f%%"
+                ),
+                "High Risk": st.column_config.NumberColumn(
+                    "High Risk",
+                    help="Number of High Risk section-category pairs"
+                ),
+            }
+        )
+
+        # ── Single division drill-down ──
+        st.divider()
+        st.markdown("#### Division drill-down")
+        division_ids = sorted(df_div['division'].astype(int).tolist())
+        selected_div = st.selectbox("Select division", division_ids, key="div_forecast_select")
+
+        r2 = requests.get(f"{API_URL}/forecast/division/{selected_div}", timeout=5)
+        if r2.status_code == 200:
+            d = r2.json()
+            c1, c2, c3, c4 = st.columns(4)
+            c1.metric("Total demand",       f"₹{d['total_demand_crore']:.2f} cr")
+            c2.metric("Expected collection",f"₹{d['expected_collection_crore']:.2f} cr")
+            c3.metric("Expected shortfall", f"₹{d['expected_shortfall_crore']:.2f} cr")
+            c4.metric("Efficiency",         f"{d['weighted_efficiency_pct']:.1f}%")
+
+            st.markdown(
+                f"**{d['sections_count']}** section-category pairs tracked — "
+                f"**{d['high_risk_count']}** flagged High Risk — "
+                f"High Risk shortfall: **₹{d['high_risk_shortfall_crore']:.2f} crore**"
+            )
+
+    except Exception as e:
+        st.error(f"Could not load division forecast: {e}")
