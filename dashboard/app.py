@@ -94,7 +94,7 @@ st.divider()
 
 # ── Tabs ──────────────────────────────────────────────────────────────────────
 
-tab1, tab2, tab3, tab4 = st.tabs(["🏢 Field Manager View", "📊 Data / Ops View", "🏙️ Division Forecast", "🚨 Anomaly Detection"])
+tab1, tab2, tab3, tab4, tab5 = st.tabs(["🏢 Field Manager View", "📊 Data / Ops View", "🏙️ Division Forecast", "🚨 Anomaly Detection", "📈 Revenue Forecast"])
 # ════════════════════════════════════════════════════════════════════════════════
 # TAB 1 — Field Manager View
 # ════════════════════════════════════════════════════════════════════════════════
@@ -469,3 +469,110 @@ with tab4:
 
     except Exception as e:
         st.error(f"Could not load anomaly data: {e}")
+
+# ════════════════════════════════════════════════════════════════════════════════
+# TAB 5 — Revenue Forecast
+# ════════════════════════════════════════════════════════════════════════════════
+
+with tab5:
+    st.subheader("Revenue forecast — demand × efficiency")
+    st.caption("Prophet forecasts next month demand. Combined with XGBoost efficiency prediction to produce a complete revenue forecast.")
+
+    division_ids = sorted(preds['division'].unique().astype(int).tolist())
+    selected_div = st.selectbox("Select division", division_ids, key="rev_forecast_div")
+
+    if st.button("Run revenue forecast", type="primary"):
+        with st.spinner("Running Prophet demand forecast..."):
+            try:
+                r = requests.get(
+                    f"{API_URL}/forecast/revenue/{selected_div}",
+                    timeout=60
+                )
+                if r.status_code == 200:
+                    data = r.json()
+
+                    # ── Summary metrics ──
+                    col1, col2, col3 = st.columns(3)
+                    col1.metric(
+                        "Forecasted demand",
+                        f"₹{data['forecasted_demand_crore']:.2f} crore"
+                    )
+                    col2.metric(
+                        "Expected collection",
+                        f"₹{data['expected_collection_crore']:.2f} crore"
+                    )
+                    col3.metric(
+                        "Expected shortfall",
+                        f"₹{data['expected_shortfall_crore']:.2f} crore",
+                        delta=f"-{data['expected_shortfall_crore']:.2f} cr",
+                        delta_color="inverse"
+                    )
+
+                    st.markdown(f"**Efficiency assumption:** {data['efficiency_pct']:.1f}% (from section-level XGBoost predictions)")
+
+                    # ── Forecast chart ──
+                    st.markdown("#### Demand forecast with confidence interval")
+                    forecast_df = pd.DataFrame(data['forecast_series'])
+                    forecast_df['ds'] = pd.to_datetime(forecast_df['ds'])
+                    forecast_df['yhat_crore']       = forecast_df['yhat'] / 1e7
+                    forecast_df['yhat_lower_crore']  = forecast_df['yhat_lower'] / 1e7
+                    forecast_df['yhat_upper_crore']  = forecast_df['yhat_upper'] / 1e7
+
+                    actual   = forecast_df[~forecast_df['is_forecast']]
+                    forecast = forecast_df[forecast_df['is_forecast']]
+
+                    fig = go.Figure()
+
+                    # Confidence interval band
+                    fig.add_trace(go.Scatter(
+                        x=pd.concat([forecast['ds'], forecast['ds'].iloc[::-1]]),
+                        y=pd.concat([forecast['yhat_upper_crore'], forecast['yhat_lower_crore'].iloc[::-1]]),
+                        fill='toself',
+                        fillcolor='rgba(99,102,241,0.15)',
+                        line=dict(color='rgba(255,255,255,0)'),
+                        name='Confidence interval',
+                        showlegend=True
+                    ))
+
+                    # Actual line
+                    fig.add_trace(go.Scatter(
+                        x=actual['ds'], y=actual['yhat_crore'],
+                        name='Fitted (actual period)',
+                        line=dict(color='#3b82f6', width=2),
+                        mode='lines+markers'
+                    ))
+
+                    # Forecast line
+                    fig.add_trace(go.Scatter(
+                        x=forecast['ds'], y=forecast['yhat_crore'],
+                        name='Forecast',
+                        line=dict(color='#8b5cf6', width=2, dash='dash'),
+                        mode='lines+markers'
+                    ))
+
+                    fig.update_layout(
+                        yaxis_title="Demand (₹ crore)",
+                        xaxis_title="Month",
+                        height=380,
+                        margin=dict(t=20),
+                        legend=dict(orientation="h", y=1.1)
+                    )
+                    st.plotly_chart(fig, use_container_width=True)
+
+                    st.markdown("#### How this works")
+                    st.markdown("""
+                    **Step 1 — Demand forecast (Prophet):** Trains on 52 months of historical demand
+                    for this division and extrapolates the trend and seasonality forward.
+
+                    **Step 2 — Efficiency prediction (XGBoost):** Uses the division's weighted
+                    collection efficiency from section-level predictions.
+
+                    **Step 3 — Revenue forecast:** Multiplies forecasted demand by predicted efficiency
+                    to get expected collection. The shortfall is what field teams need to recover.
+                    """)
+
+                else:
+                    st.error(f"API error: {r.status_code} — {r.text}")
+
+            except Exception as e:
+                st.error(f"Forecast failed: {e}")

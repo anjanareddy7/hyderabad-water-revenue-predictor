@@ -4,6 +4,7 @@ from pydantic import BaseModel, field_validator
 from pathlib import Path
 from src.division_forecast import get_division_summary, get_all_divisions_forecast
 from src.anomaly import score_anomaly
+from src.demand_forecast import compute_revenue_forecast, batch_forecast_top_divisions
 import pandas as pd
 import numpy as np
 import joblib
@@ -312,5 +313,36 @@ def anomaly_summary():
             "anomaly_rate_pct": round(len(anomalies) / len(scores) * 100, 1),
             "top_anomalies":    top.fillna(0).to_dict(orient='records'),
         }
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+    
+@app.get("/forecast/revenue/{division_id}")
+def revenue_forecast(division_id: int, efficiency_pct: float = None):
+    """
+    Combined revenue forecast for a division.
+    Uses Prophet for demand forecasting and optionally accepts
+    an efficiency override. If not provided, uses the division's
+    weighted efficiency from the section-level predictions.
+    """
+    try:
+        # Get efficiency from division forecast if not provided
+        if efficiency_pct is None:
+            div_summary = get_division_summary(division_id)
+            if div_summary is None:
+                raise HTTPException(
+                    status_code=404,
+                    detail=f"Division {division_id} not found"
+                )
+            efficiency_pct = div_summary['weighted_efficiency_pct']
+
+        result = compute_revenue_forecast(division_id, efficiency_pct)
+        if result is None:
+            raise HTTPException(
+                status_code=404,
+                detail=f"Insufficient data for division {division_id}"
+            )
+        return result
+    except HTTPException:
+        raise
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
