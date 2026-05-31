@@ -1,3 +1,4 @@
+[![CI](https://github.com/anjanareddy7/hyderabad-water-revenue-predictor/actions/workflows/ci.yml/badge.svg)](https://github.com/anjanareddy7/hyderabad-water-revenue-predictor/actions/workflows/ci.yml)
 # Hyderabad Water Revenue Predictor
 
 Predicts monthly water bill collection efficiency across 500+ sections of Hyderabad's HMWSSB utility using 4 years of real government billing data (2022–2026, Telangana Open Data Portal).
