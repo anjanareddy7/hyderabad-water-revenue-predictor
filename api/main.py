@@ -3,6 +3,7 @@ from fastapi import FastAPI, HTTPException
 from pydantic import BaseModel, field_validator
 from pathlib import Path
 from src.division_forecast import get_division_summary, get_all_divisions_forecast
+from src.anomaly import score_anomaly
 import pandas as pd
 import numpy as np
 import joblib
@@ -26,7 +27,7 @@ feature_cols     = None
 risk_tiers       = None
 fallback_medians = None
 
-# ── Lifespan (replaces deprecated on_event) ───────────────────────────────────
+# ── Lifespan ──────────────────────────────────────────────────────────────────
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
@@ -145,6 +146,8 @@ class PredictResponse(BaseModel):
     risk_tier:                  str
     cold_start:                 bool
     high_uncertainty:           bool
+    is_anomaly:                 bool
+    anomaly_score:              float
     model_version:              str = "1.0.0"
 
 
@@ -240,6 +243,8 @@ def predict(req: PredictRequest):
         cold_start
     )
 
+    anomaly_result = score_anomaly(features)
+
     return PredictResponse(
         predicted_efficiency       = round(pred, 4),
         predicted_shortfall_rupees = round(shortfall, 2),
@@ -247,6 +252,8 @@ def predict(req: PredictRequest):
         risk_tier                  = risk_tier,
         cold_start                 = cold_start,
         high_uncertainty           = high_uncertainty,
+        is_anomaly                 = anomaly_result['is_anomaly'],
+        anomaly_score              = anomaly_result['anomaly_score'],
     )
 
 
@@ -263,6 +270,7 @@ def get_sections():
 @app.get("/categories")
 def get_categories():
     return {"categories": sorted(list(KNOWN_CATEGORIES))}
+
 
 @app.get("/forecast/divisions")
 def forecast_all_divisions():
@@ -281,3 +289,28 @@ def forecast_division(division_id: int):
             detail=f"Division {division_id} not found"
         )
     return result
+
+
+@app.get("/anomaly/summary")
+def anomaly_summary():
+    """Get summary of anomalous sections in the test period."""
+    try:
+        scores    = pd.read_parquet(PROCESSED / "anomaly_scores.parquet")
+        anomalies = scores[scores['is_anomaly']].copy()
+
+        top = (
+            anomalies
+            .sort_values('anomaly_score')
+            [['section', 'category', 'year', 'month',
+              'anomaly_score', 'demand_growth_rate', 'demand_per_can']]
+            .head(20)
+        )
+
+        return {
+            "total_scored":     int(len(scores)),
+            "total_anomalies":  int(len(anomalies)),
+            "anomaly_rate_pct": round(len(anomalies) / len(scores) * 100, 1),
+            "top_anomalies":    top.fillna(0).to_dict(orient='records'),
+        }
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))

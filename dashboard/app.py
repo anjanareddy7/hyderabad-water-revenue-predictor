@@ -94,8 +94,7 @@ st.divider()
 
 # ── Tabs ──────────────────────────────────────────────────────────────────────
 
-tab1, tab2, tab3 = st.tabs(["🏢 Field Manager View", "📊 Data / Ops View", "🏙️ Division Forecast"])
-
+tab1, tab2, tab3, tab4 = st.tabs(["🏢 Field Manager View", "📊 Data / Ops View", "🏙️ Division Forecast", "🚨 Anomaly Detection"])
 # ════════════════════════════════════════════════════════════════════════════════
 # TAB 1 — Field Manager View
 # ════════════════════════════════════════════════════════════════════════════════
@@ -398,3 +397,75 @@ with tab3:
 
     except Exception as e:
         st.error(f"Could not load division forecast: {e}")
+
+# ════════════════════════════════════════════════════════════════════════════════
+# TAB 4 — Anomaly Detection
+# ════════════════════════════════════════════════════════════════════════════════
+
+with tab4:
+    st.subheader("Billing pattern anomaly detection")
+    st.caption("Isolation Forest flags section-category pairs with unusual billing patterns compared to their own history.")
+
+    try:
+        r = requests.get(f"{API_URL}/anomaly/summary", timeout=10)
+        data = r.json()
+
+        col1, col2, col3 = st.columns(3)
+        col1.metric("Total rows scored",  f"{data['total_scored']:,}")
+        col2.metric("Anomalies detected", f"{data['total_anomalies']:,}")
+        col3.metric("Anomaly rate",       f"{data['anomaly_rate_pct']}%")
+
+        st.divider()
+
+        st.markdown("#### Top anomalous section-category pairs")
+        st.caption("Sorted by anomaly score — most anomalous first. Lower score = more unusual.")
+
+        df_anomalies = pd.DataFrame(data['top_anomalies'])
+
+        if len(df_anomalies) > 0:
+            df_anomalies['demand_growth_rate'] = df_anomalies['demand_growth_rate'].round(2)
+            df_anomalies['demand_per_can']     = df_anomalies['demand_per_can'].round(0)
+            df_anomalies['anomaly_score']      = df_anomalies['anomaly_score'].round(4)
+
+            df_anomalies = df_anomalies.rename(columns={
+                'section':            'Section',
+                'category':           'Category',
+                'year':               'Year',
+                'month':              'Month',
+                'anomaly_score':      'Anomaly Score',
+                'demand_growth_rate': 'Demand Growth Rate',
+                'demand_per_can':     'Demand per Connection (₹)',
+            })
+
+            st.dataframe(
+                df_anomalies,
+                use_container_width=True,
+                hide_index=True,
+                column_config={
+                    "Anomaly Score": st.column_config.NumberColumn(
+                        "Anomaly Score",
+                        help="Lower = more anomalous. Normal sections score around -0.3 to -0.4"
+                    ),
+                    "Demand Growth Rate": st.column_config.NumberColumn(
+                        "Demand Growth Rate",
+                        help="Month-over-month demand change ratio. Very high values indicate sudden billing spikes."
+                    ),
+                }
+            )
+
+        st.divider()
+        st.markdown("#### What causes anomalies?")
+        st.markdown("""
+        The Isolation Forest model flags a section-category pair as anomalous when its
+        current month billing pattern deviates significantly from its own historical baseline.
+
+        Common causes:
+        - **Sudden demand spike** — 10x or more increase in billed amount (data entry error or arrears rebilling)
+        - **Mass connection changes** — noofcans dropping or rising sharply overnight
+        - **New sections** — sections added in 2026 with no history appear anomalous by definition
+        - **Structural zeros** — sections like WTPs that have never collected anything
+        - **Extreme demand per connection** — one connection being billed crores in a month
+        """)
+
+    except Exception as e:
+        st.error(f"Could not load anomaly data: {e}")
